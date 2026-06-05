@@ -262,6 +262,47 @@ app.post('/api/regulations/:id/assess', async (req, res) => {
   }
 });
 
+// ── News ──────────────────────────────────────────────────────
+
+app.get('/api/news', async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const { rows } = await pool.query(
+      `SELECT n.id, n.reg_id, n.title, n.url, n.source, n.published_at,
+              r.code, r.title AS reg_title, r.body AS reg_body
+       FROM news_items n
+       JOIN regulations r ON n.reg_id = r.id
+       WHERE n.published_at > NOW() - ($1 || ' days')::INTERVAL
+          OR n.published_at IS NULL
+       ORDER BY n.published_at DESC NULLS LAST`,
+      [days]
+    );
+    const map = {};
+    for (const row of rows) {
+      if (!map[row.reg_id]) {
+        map[row.reg_id] = {
+          reg_id: row.reg_id, code: row.code,
+          title: row.reg_title, body: row.reg_body,
+          items: [],
+        };
+      }
+      map[row.reg_id].items.push({
+        id: row.id, title: row.title, url: row.url,
+        source: row.source, published_at: row.published_at,
+      });
+    }
+    const grouped = Object.values(map).sort((a, b) => {
+      const aT = a.items[0]?.published_at || 0;
+      const bT = b.items[0]?.published_at || 0;
+      return new Date(bT) - new Date(aT);
+    });
+    res.json(grouped);
+  } catch (err) {
+    console.error('[api] GET /news:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Scan ──────────────────────────────────────────────────────
 
 let scanRunning = false;
@@ -301,7 +342,7 @@ async function start() {
     console.log('[cron] weekly scan triggered');
     if (!scanRunning) {
       scanRunning = true;
-      runScan(['mdcg', 'fda', 'iso', 'iec', 'custom']).finally(() => { scanRunning = false; });
+      runScan(['mdcg', 'fda', 'iso', 'iec', 'custom', 'news']).finally(() => { scanRunning = false; });
     }
   });
 

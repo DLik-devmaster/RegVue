@@ -4,6 +4,7 @@ import { fetchFDAUpdates } from './sources/fda.js';
 import { checkISOStandards } from './sources/iso.js';
 import { checkIECStandards } from './sources/iec.js';
 import { checkCustomStandards } from './sources/custom.js';
+import { fetchAllNews } from './sources/news.js';
 
 // Extract the maximum 4-digit year from a version string like "2006+AMD1:2015"
 function maxYear(versionStr) {
@@ -243,6 +244,29 @@ async function runCustomScan() {
   }
 }
 
+// ── News scanner ──────────────────────────────────────────────
+async function runNewsScan() {
+  console.log('[scanner] starting news scan...');
+  const { rows: regs } = await pool.query(`SELECT id, code, title FROM regulations`);
+  if (!regs.length) { console.log('[scanner] no regulations for news scan'); return; }
+
+  const results = await fetchAllNews(regs);
+  let inserted = 0;
+  for (const reg of regs) {
+    for (const item of (results[reg.id] || [])) {
+      try {
+        const r = await pool.query(
+          `INSERT INTO news_items (reg_id, title, url, source, published_at)
+           VALUES ($1,$2,$3,$4,$5) ON CONFLICT (reg_id, url) DO NOTHING`,
+          [reg.id, item.title, item.url, item.source || null, item.published_at || null]
+        );
+        if (r.rowCount > 0) inserted++;
+      } catch { /* skip on conflict / invalid */ }
+    }
+  }
+  console.log(`[scanner] news scan done — ${inserted} new items`);
+}
+
 // ── Main scan entry point ─────────────────────────────────────
 export async function runScan(sources = ['mdcg', 'fda', 'iso', 'iec', 'custom']) {
   console.log(`[scanner] === scan started (${sources.join(', ')}) ===`);
@@ -253,6 +277,7 @@ export async function runScan(sources = ['mdcg', 'fda', 'iso', 'iec', 'custom'])
   if (sources.includes('iso'))    await runISOScan();
   if (sources.includes('iec'))    await runIECScan();
   if (sources.includes('custom')) await runCustomScan();
+  if (sources.includes('news'))   await runNewsScan();
 
   console.log(`[scanner] === scan done in ${((Date.now() - t) / 1000).toFixed(1)}s ===`);
 }
