@@ -14,36 +14,37 @@ import { calcGapScore } from './utils.js';
 const require = createRequire(import.meta.url);
 const PAID_BODIES = new Set(['ISO', 'ASTM']);
 
-// Variant B: compute a diff between two document texts.
-// Only changed lines are sent to Claude — unchanged content is skipped.
-function buildDocumentDiff(oldText, newText, maxChars = 12000) {
-  const toLines = (text) => text
-    .split('\n')
-    .map(l => l.trim())
-    .filter(l => l.length > 30); // skip page numbers, headers, short fragments
+// Preprocess document texts: strip preamble, TOC, watermarks, and running headers.
+// Returns both cleaned texts side-by-side for Claude to compare semantically.
+// Line-level diff is unreliable because PDFs reflow text at different column widths
+// between editions, making the same sentence appear on different line boundaries.
+function buildDocumentContext(oldText, newText, maxCharsEach = 14000) {
+  const WATERMARK_RE = /licensed to|reproduction or distribution|printed\s*\/\s*viewed by|@\d{4}-\d{2}|all rights reserved|©\s*iso\s*\d{4}|copyright(ed)?\s+material/i;
 
-  const oldLines = toLines(oldText);
-  const newLines = toLines(newText);
+  const findBodyStart = (lines) => {
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.includes('....') || l.includes('….')) continue;
+      if (/^[1-9]\d*[\s\t]+(Scope|Normative|Terms|General|Foreword|Introduction)/i.test(l)) return i;
+      if (/^Scope\s*$/i.test(l)) return i;
+    }
+    for (let i = 0; i < lines.length; i++) {
+      if (/^[1-9]\d*[\s\t]/.test(lines[i]) && !lines[i].includes('....')) return i;
+    }
+    return 0;
+  };
 
-  const oldSet = new Set(oldLines);
-  const newSet = new Set(newLines);
+  const cleanText = (text) => {
+    const lines = text.split('\n')
+      .map(l => l.replace(/\bISO\s+\d+[:-]\d+[:-]?\d*\([a-zA-Z]+\)/g, '').trim())
+      .filter(l => l.length > 20 && !WATERMARK_RE.test(l) && !l.includes('....') && !l.includes('….'));
+    const start = findBodyStart(lines);
+    return lines.slice(start).join('\n').slice(0, maxCharsEach);
+  };
 
-  const removed = oldLines.filter(l => !newSet.has(l));
-  const added   = newLines.filter(l => !oldSet.has(l));
-
-  const parts = [];
-  if (removed.length) {
-    parts.push('--- REMOVED / CHANGED (present in controlled version only):');
-    removed.forEach(l => parts.push(`- ${l}`));
-  }
-  if (added.length) {
-    parts.push('\n+++ ADDED / CHANGED (present in latest version only):');
-    added.forEach(l => parts.push(`+ ${l}`));
-  }
-
-  if (!parts.length) return '(no textual differences detected between versions)';
-
-  return parts.join('\n').slice(0, maxChars);
+  const oldClean = cleanText(oldText);
+  const newClean = cleanText(newText);
+  return { oldClean, newClean };
 }
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -232,19 +233,21 @@ export async function generateGapAssessment(reg, opts = {}) {
 
   if (documentContext) {
     disclaimer = false;
-    const diff = buildDocumentDiff(documentContext.oldText, documentContext.newText);
+    const { oldClean, newClean } = buildDocumentContext(documentContext.oldText, documentContext.newText);
     prompt = `You are a regulatory compliance expert for medical device manufacturers.
 
 Regulation: ${reg.code} — ${reg.title} | Issuing body: ${reg.body}
 Controlled version: ${reg.version} | Latest version: ${reg.latest_version}
 
-You are provided with a diff between the two versions.
-Lines starting with "-" exist only in the controlled (older) version — they were removed or modified.
-Lines starting with "+" exist only in the latest version — they were added or modified.
-Identify compliance gaps: new or changed requirements that manufacturers must address.
+Compare the two document versions below and identify compliance gaps:
+requirements that are new, modified, or removed in the latest version relative to the controlled version.
+Focus on normative clauses, changed definitions, new symbols, and updated labelling requirements.
 
-=== DOCUMENT DIFF ===
-${diff}
+=== CONTROLLED (OLDER) VERSION ===
+${oldClean}
+
+=== LATEST VERSION ===
+${newClean}
 
 ${schema}`;
 
@@ -289,8 +292,8 @@ ${schema}`;
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1500,
+      model: documentContext ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001',
+      max_tokens: documentContext ? 4000 : 1500,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -362,8 +365,8 @@ app.post('/api/regulations/:id/assess/documents',
         pdfParse(newFile.buffer),
       ]);
 
-      const diffPreview = buildDocumentDiff(oldData.text, newData.text);
-      console.log(`[assess-docs] ${reg.code}: parsed ${oldData.text.length} + ${newData.text.length} chars → diff ${diffPreview.length} chars`);
+      const { oldClean, newClean } = buildDocumentContext(oldData.text, newData.text);
+      console.log(`[assess-docs] ${reg.code}: raw ${oldData.text.length}+${newData.text.length} chars → cleaned ${oldClean.length}+${newClean.length} chars (sonnet)`);
       const { changes } = await generateGapAssessment(reg, {
         documentContext: { oldText: oldData.text, newText: newData.text },
       });
