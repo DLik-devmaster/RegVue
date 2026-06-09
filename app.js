@@ -26,7 +26,7 @@ setInterval(() => {
 // Returns both cleaned texts side-by-side for Claude to compare semantically.
 // Line-level diff is unreliable because PDFs reflow text at different column widths
 // between editions, making the same sentence appear on different line boundaries.
-function buildDocumentContext(oldText, newText, maxCharsEach = 14000) {
+function buildDocumentContext(oldText, newText, maxCharsEach = 150_000) {
   const WATERMARK_RE = /licensed to|reproduction or distribution|printed\s*\/\s*viewed by|@\d{4}-\d{2}|all rights reserved|©\s*iso\s*\d{4}|copyright(ed)?\s+material/i;
 
   const findBodyStart = (lines) => {
@@ -301,7 +301,7 @@ ${schema}`;
     },
     body: JSON.stringify({
       model: documentContext ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001',
-      max_tokens: documentContext ? 4000 : 1500,
+      max_tokens: documentContext ? 6000 : 1500,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
