@@ -13,6 +13,38 @@ import { calcGapScore } from './utils.js';
 
 const require = createRequire(import.meta.url);
 const PAID_BODIES = new Set(['ISO', 'ASTM']);
+
+// Variant B: compute a diff between two document texts.
+// Only changed lines are sent to Claude — unchanged content is skipped.
+function buildDocumentDiff(oldText, newText, maxChars = 12000) {
+  const toLines = (text) => text
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 30); // skip page numbers, headers, short fragments
+
+  const oldLines = toLines(oldText);
+  const newLines = toLines(newText);
+
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+
+  const removed = oldLines.filter(l => !newSet.has(l));
+  const added   = newLines.filter(l => !oldSet.has(l));
+
+  const parts = [];
+  if (removed.length) {
+    parts.push('--- REMOVED / CHANGED (present in controlled version only):');
+    removed.forEach(l => parts.push(`- ${l}`));
+  }
+  if (added.length) {
+    parts.push('\n+++ ADDED / CHANGED (present in latest version only):');
+    added.forEach(l => parts.push(`+ ${l}`));
+  }
+
+  if (!parts.length) return '(no textual differences detected between versions)';
+
+  return parts.join('\n').slice(0, maxChars);
+}
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 export { calcGapScore };
@@ -200,19 +232,19 @@ export async function generateGapAssessment(reg, opts = {}) {
 
   if (documentContext) {
     disclaimer = false;
+    const diff = buildDocumentDiff(documentContext.oldText, documentContext.newText);
     prompt = `You are a regulatory compliance expert for medical device manufacturers.
 
 Regulation: ${reg.code} — ${reg.title} | Issuing body: ${reg.body}
 Controlled version: ${reg.version} | Latest version: ${reg.latest_version}
 
-Compare the two document versions and identify specific gaps based only on the provided text.
-Focus on: new requirements, modified scope or wording, removed requirements, changed normative references.
+You are provided with a diff between the two versions.
+Lines starting with "-" exist only in the controlled (older) version — they were removed or modified.
+Lines starting with "+" exist only in the latest version — they were added or modified.
+Identify compliance gaps: new or changed requirements that manufacturers must address.
 
-=== CONTROLLED VERSION ===
-${documentContext.oldText.slice(0, 5000)}
-
-=== LATEST VERSION ===
-${documentContext.newText.slice(0, 5000)}
+=== DOCUMENT DIFF ===
+${diff}
 
 ${schema}`;
 
@@ -330,7 +362,8 @@ app.post('/api/regulations/:id/assess/documents',
         pdfParse(newFile.buffer),
       ]);
 
-      console.log(`[assess-docs] ${reg.code}: parsed ${oldData.text.length} + ${newData.text.length} chars`);
+      const diffPreview = buildDocumentDiff(oldData.text, newData.text);
+      console.log(`[assess-docs] ${reg.code}: parsed ${oldData.text.length} + ${newData.text.length} chars → diff ${diffPreview.length} chars`);
       const { changes } = await generateGapAssessment(reg, {
         documentContext: { oldText: oldData.text, newText: newData.text },
       });
