@@ -70,6 +70,10 @@ if (existsSync(staticDir)) {
   app.use(express.static(staticDir));
 }
 
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+
 app.use('/api', clerkMiddleware());
 
 const authRequired = requireAuth();
@@ -478,12 +482,6 @@ app.post('/api/scan', authRequired, async (req, res) => {
 
 app.get('/api/scan/status', (_req, res) => {
   res.json({ running: scanState.running });
-});
-
-// ── Health ────────────────────────────────────────────────────
-
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
 });
 
 export default app;
