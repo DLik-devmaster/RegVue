@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { clerkMiddleware, requireAuth } from '@clerk/express';
+import { clerkMiddleware, getAuth } from '@clerk/express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
@@ -74,7 +74,13 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
 
-const withAuth = [clerkMiddleware(), requireAuth()];
+const requireApiAuth = (req, res, next) => {
+  const { userId } = getAuth(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+};
+
+const withAuth = [clerkMiddleware(), requireApiAuth];
 
 // ── Regulations ───────────────────────────────────────────────
 
