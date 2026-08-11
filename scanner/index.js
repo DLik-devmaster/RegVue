@@ -142,8 +142,35 @@ async function runISOScan() {
 
   for (const reg of regs) {
     const found = results[reg.code];
-    if (!found) {
-      await pool.query(`UPDATE regulations SET last_checked=NOW() WHERE id=$1`, [reg.id]);
+
+    if (!found || found.fetchFailed) {
+      // Request to ISO failed even after retries — leave status untouched,
+      // just log it, so a transient outage doesn't get silently mistaken
+      // for "checked, nothing changed".
+      if (found?.fetchFailed) {
+        console.error(`[scanner] ISO fetch failed for ${reg.code}, skipping (status unchanged)`);
+      } else {
+        await pool.query(`UPDATE regulations SET last_checked=NOW() WHERE id=$1`, [reg.id]);
+      }
+      continue;
+    }
+
+    if (found.notFound) {
+      // Confirmed via manual testing: standards that ISO has withdrawn
+      // disappear from this search index entirely rather than showing a
+      // "withdrawn" status. Zero active hits for a previously-tracked code
+      // is the strongest signal we have — surface it instead of staying
+      // silently "up-to-date".
+      console.log(`[scanner] ISO no longer found: ${reg.code} — possibly withdrawn`);
+      await pool.query(
+        `UPDATE regulations SET status='under-review', severity='major', last_checked=NOW() WHERE id=$1`,
+        [reg.id]
+      );
+      await createAlert(
+        reg.id, reg.code, 'major', 'withdrawn',
+        `${reg.code} not found in ISO's active catalogue`,
+        `${reg.code} no longer appears among active ISO standards. It may have been withdrawn or superseded. Verify manually at iso.org before relying on this alert.`
+      );
       continue;
     }
 
@@ -180,8 +207,27 @@ async function runIECScan() {
 
   for (const reg of regs) {
     const found = results[reg.code];
-    if (!found) {
-      await pool.query(`UPDATE regulations SET last_checked=NOW() WHERE id=$1`, [reg.id]);
+
+    if (!found || found.fetchFailed) {
+      if (found?.fetchFailed) {
+        console.error(`[scanner] IEC fetch failed for ${reg.code}, skipping (status unchanged)`);
+      } else {
+        await pool.query(`UPDATE regulations SET last_checked=NOW() WHERE id=$1`, [reg.id]);
+      }
+      continue;
+    }
+
+    if (found.notFound) {
+      console.log(`[scanner] IEC no longer found: ${reg.code} — possibly withdrawn`);
+      await pool.query(
+        `UPDATE regulations SET status='under-review', severity='major', last_checked=NOW() WHERE id=$1`,
+        [reg.id]
+      );
+      await createAlert(
+        reg.id, reg.code, 'major', 'withdrawn',
+        `${reg.code} not found in IEC's active catalogue`,
+        `${reg.code} no longer appears among active IEC standards. It may have been withdrawn or superseded. Verify manually at webstore.iec.ch before relying on this alert.`
+      );
       continue;
     }
 
