@@ -98,8 +98,15 @@ async function runFDAScan() {
 
   for (const reg of regs) {
     const keywords = reg.code.toLowerCase().split(/[\s\/]+/).filter(w => w.length > 3);
+    // A bare year ("2023") is common to nearly every Federal Register title
+    // and isn't specific to any one regulation — matching on it alone
+    // produced false positives (e.g. "Cybersecurity 2023" matching an
+    // antidumping notice titled "...2023-2024"). Require a non-numeric
+    // keyword; fall back to the full set only if the code has none.
+    const textKeywords = keywords.filter(kw => !/^\d+$/.test(kw));
+    const matchKeywords = textKeywords.length > 0 ? textKeywords : keywords;
     const match = docs.find(doc =>
-      keywords.some(kw => doc.title.toLowerCase().includes(kw))
+      matchKeywords.some(kw => doc.title.toLowerCase().includes(kw))
     );
 
     if (match) {
