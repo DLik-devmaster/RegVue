@@ -49,7 +49,26 @@ function matchesBaseCode(reference, baseCode) {
   return re.test((reference || '').trim());
 }
 
-async function searchISO(code) {
+// committee.iso.org mirrors the same standard pages as www.iso.org but isn't
+// behind Cloudflare's JS challenge, so it's usable for a plain fetch. Each
+// standard's page carries an explicit lifecycle status ("Published",
+// "Withdrawn", ...) in a small, stable HTML fragment.
+async function checkPageStatus(seoURL) {
+  try {
+    const res = await fetch(`https://committee.iso.org${seoURL}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0' },
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const m = html.match(/id="publicationStatus"[\s\S]{0,150}?<span>([^<]+)<\/span>/);
+    return m ? m[1].trim() : null;
+  } catch (err) {
+    console.error(`[iso] status page fetch failed for ${seoURL}:`, err.message);
+    return null;
+  }
+}
+
+async function searchISO(code, knownPage) {
   const baseCode = code.replace(/:\d{4}.*/, '').trim();
 
   const json = await fetchWithRetry(baseCode);
@@ -69,20 +88,34 @@ async function searchISO(code) {
       // ":YYYY" in the reference (the amendment year), not the first
       // (the base edition year), so amendments outrank their base edition.
       const years = [...(h.reference || '').matchAll(/:(\d{4})/g)].map(m => parseInt(m[1]));
-      return years.length ? { reference: h.reference, year: Math.max(...years) } : null;
+      return years.length ? { reference: h.reference, year: Math.max(...years), seoURL: h.seoURL } : null;
     })
     .filter(Boolean);
 
   if (matches.length === 0) {
-    console.log(`[iso] no active match for ${baseCode} (${hits.length} hits) — possibly withdrawn`);
-    return { baseCode, notFound: true };
+    // Algolia's search index silently drops withdrawn standards rather than
+    // flagging them, so zero hits is only a hint, not proof. If we know this
+    // code's standard page from a previous successful match, confirm via
+    // committee.iso.org's explicit lifecycle status before alerting —
+    // avoids treating a transient indexing gap as a withdrawal.
+    if (knownPage) {
+      const pageStatus = await checkPageStatus(knownPage);
+      if (pageStatus && pageStatus !== 'Withdrawn') {
+        console.log(`[iso] ${baseCode} — 0 Algolia hits but committee.iso.org says "${pageStatus}", not withdrawn`);
+        return { baseCode };
+      }
+      console.log(`[iso] no active match for ${baseCode} — confirmed via committee.iso.org: ${pageStatus || 'unreachable'}`);
+      return { baseCode, notFound: true, confirmed: pageStatus === 'Withdrawn' };
+    }
+    console.log(`[iso] no active match for ${baseCode} (${hits.length} hits) — possibly withdrawn, unconfirmed (no known page)`);
+    return { baseCode, notFound: true, confirmed: false };
   }
 
   matches.sort((a, b) => b.year - a.year);
   const best = matches[0];
 
   console.log(`[iso] ${baseCode} → ${best.reference}`);
-  return { baseCode, latestEdition: best.reference, year: String(best.year) };
+  return { baseCode, latestEdition: best.reference, year: String(best.year), standardPage: best.seoURL };
 }
 
 export async function checkISOStandards(regulations) {
@@ -92,7 +125,7 @@ export async function checkISOStandards(regulations) {
   const results = {};
   for (const reg of isoRegs) {
     try {
-      const result = await searchISO(reg.code);
+      const result = await searchISO(reg.code, reg.iso_standard_page);
       if (result) results[reg.code] = result;
     } catch (err) {
       console.error(`[iso] error for ${reg.code}:`, err.message);

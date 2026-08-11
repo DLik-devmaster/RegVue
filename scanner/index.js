@@ -156,12 +156,12 @@ async function runISOScan() {
     }
 
     if (found.notFound) {
-      // Confirmed via manual testing: standards that ISO has withdrawn
-      // disappear from this search index entirely rather than showing a
-      // "withdrawn" status. Zero active hits for a previously-tracked code
-      // is the strongest signal we have — surface it instead of staying
-      // silently "up-to-date".
-      console.log(`[scanner] ISO no longer found: ${reg.code} — possibly withdrawn`);
+      // Zero active hits from Algolia is only a hint on its own — a
+      // withdrawn standard disappears from the index, but so can a code
+      // during a transient reindex. When we have a standard page saved from
+      // an earlier successful match, searchISO() cross-checks it directly
+      // against committee.iso.org's explicit lifecycle status first.
+      console.log(`[scanner] ISO no longer found: ${reg.code} — ${found.confirmed ? 'confirmed withdrawn' : 'possibly withdrawn, unconfirmed'}`);
       await pool.query(
         `UPDATE regulations SET status='under-review', severity='major', last_checked=NOW() WHERE id=$1`,
         [reg.id]
@@ -169,9 +169,17 @@ async function runISOScan() {
       await createAlert(
         reg.id, reg.code, 'major', 'withdrawn',
         `${reg.code} not found in ISO's active catalogue`,
-        `${reg.code} no longer appears among active ISO standards. It may have been withdrawn or superseded. Verify manually at iso.org before relying on this alert.`
+        found.confirmed
+          ? `${reg.code} has been withdrawn — confirmed via ISO's official standard page. Review whether a replacement standard applies.`
+          : `${reg.code} no longer appears among active ISO standards. It may have been withdrawn or superseded, but this could not be independently confirmed. Verify manually at iso.org before relying on this alert.`
       );
       continue;
+    }
+
+    // Keep the standard's page reference current so a future "not found"
+    // can be cross-checked against committee.iso.org instead of guessed at.
+    if (found.standardPage && found.standardPage !== reg.iso_standard_page) {
+      await pool.query(`UPDATE regulations SET iso_standard_page=$1 WHERE id=$2`, [found.standardPage, reg.id]);
     }
 
     const storedYear = maxYear(reg.latest_version || reg.version);

@@ -30,6 +30,7 @@ CREATE INDEX IF NOT EXISTS alerts_reg_id_idx ON alerts(reg_id);
 CREATE INDEX IF NOT EXISTS alerts_created_idx ON alerts(created_at DESC);
 
 ALTER TABLE regulations ADD COLUMN IF NOT EXISTS source_url TEXT;
+ALTER TABLE regulations ADD COLUMN IF NOT EXISTS iso_standard_page TEXT;
 
 CREATE TABLE IF NOT EXISTS news_items (
   id          SERIAL PRIMARY KEY,
