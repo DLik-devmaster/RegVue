@@ -56,7 +56,7 @@ async function runMDCGScan() {
       continue;
     }
 
-    const onlineVersion = found.rev ? `${baseCode} ${found.rev}` : baseCode;
+    const onlineVersion = found.rev ? `${baseCode} ${found.rev.label}` : baseCode;
     // MDCG codes encode the revision in reg.code itself (e.g. "MDCG 2021-24 Rev.1")
     // when version/latest_version are "—" (set by catalogItemToReg), fall back to code
     const storedVersion =
